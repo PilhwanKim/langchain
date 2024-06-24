@@ -1,9 +1,7 @@
 from langchain_naver import __all__
 
 EXPECTED_ALL = [
-    "NaverLLM",
     "ChatNaver",
-    "NaverVectorStore",
     "NaverEmbeddings",
 ]
 
