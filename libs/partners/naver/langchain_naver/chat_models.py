@@ -1,19 +1,55 @@
 """Naver chat models."""
-from typing import Any, AsyncIterator, Iterator, List, Optional, Dict
+import logging
+import os
+from typing import Any, AsyncIterator, Iterator, List, Optional, Dict, cast, Tuple
 
 import httpx
+from httpx_sse import connect_sse
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
 from langchain_core.language_models.chat_models import LangSmithParams, BaseChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.pydantic_v1 import Field, SecretStr, root_validator
 from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
 
 DEFAULT_BASE_URL = "https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions"
+
+logger = logging.getLogger(__name__)
+
+
+def _convert_message_to_naver_chat_message(
+    message: BaseMessage,
+) -> Dict:
+    raise NotImplementedError
+
+
+def _convert_naver_chat_message_to_message(
+    _message: Dict,
+) -> BaseMessage:
+    role = _message["role"]
+    assert role == "assistant", f"Expected role to be 'assistant', got {role}"
+    content = cast(str, _message["content"])
+    additional_kwargs: Dict = {}
+    return AIMessage(
+        content=content,
+        additional_kwargs=additional_kwargs,
+    )
+
+
+def _raise_on_error(response: httpx.Response) -> None:
+    """Raise an error if the response is an error."""
+    if httpx.codes.is_error(response.status_code):
+        error_message = response.read().decode("utf-8")
+        raise httpx.HTTPStatusError(
+            f"Error response {response.status_code} "
+            f"while fetching {response.url}: {error_message}",
+            request=response.request,
+            response=response,
+        )
 
 
 class ChatNaver(BaseChatModel):
@@ -162,7 +198,42 @@ class ChatNaver(BaseChatModel):
             "NCP-APIGW-API-KEY": apigw_api_key,
         }
 
-    # TODO: This method must be implemented to generate chat responses.
+    def _create_message_dicts(
+        self, messages: List[BaseMessage], stop: Optional[List[str]]
+    ) -> Tuple[List[Dict], Dict[str, Any]]:
+        params = self._client_params
+        if stop is not None or "stop" in params:
+            if "stop" in params:
+                params.pop("stop")
+            logger.warning(
+                "Parameter `stop` not yet supported (https://docs.mistral.ai/api)"
+            )
+        message_dicts = [_convert_message_to_naver_chat_message(m) for m in messages]
+        return message_dicts, params
+
+    def _completion_with_retry(self, **kwargs: Any) -> Any:
+        if "stream" not in kwargs:
+            kwargs["stream"] = False
+
+        stream = kwargs["stream"]
+        if stream:
+
+            def iter_sse() -> Iterator[Dict]:
+                with connect_sse(
+                    self.client, "POST", "/v1/chat-completions", json=kwargs
+                ) as event_source:
+                    _raise_on_error(event_source.response)
+                    for event in event_source.iter_sse():
+                        if event.data == "[DONE]":
+                            return
+                        yield event.json()
+
+            return iter_sse()
+        else:
+            response = self.client.post(url="/v1/chat-completions", json=kwargs)
+            _raise_on_error(response)
+            return response.json()
+
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -170,7 +241,12 @@ class ChatNaver(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        raise NotImplementedError
+        message_dicts, params = self._create_message_dicts(messages, stop)
+        params = {**params, **kwargs}
+        response = self._completion_with_retry(
+            messages=message_dicts, run_manager=run_manager, **params
+        )
+        return self._create_chat_result(response)
 
     # TODO: Implement if ChatNaver supports streaming. Otherwise delete method.
     def _stream(
