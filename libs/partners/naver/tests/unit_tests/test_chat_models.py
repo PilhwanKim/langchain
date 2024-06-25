@@ -1,9 +1,12 @@
 """Test chat model integration."""
 import json
-from typing import Any
+import os
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic.v1 import SecretStr
+
 from langchain_core.messages import (
     AIMessage,
     FunctionMessage,
@@ -11,95 +14,101 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_openai.chat_models.base import (
-    _convert_dict_to_message,
-    _convert_message_to_dict,
-)
+# from langchain_openai.chat_models.base import (
+#     _convert_dict_to_message,
+#     _convert_message_to_dict,
+# )
 
 from langchain_naver import ChatNaver
 
 
-def test_initialization() -> None:
+os.environ["NCP_CLOVASTUDIO_API_KEY"] = "test_api_key"
+os.environ["NCP_APIGW_API_KEY"] = "test_gw_key"
+
+
+def test_initialization_api_key() -> None:
     """Test chat model initialization."""
-    ChatNaver()
+    chat_model = ChatNaver(clovastudio_api_key="foo", apigw_api_key="bar")
+    assert cast(SecretStr, chat_model.ncp_clovastudio_api_key).get_secret_value() == "foo"
+    assert cast(SecretStr, chat_model.ncp_apigw_api_key).get_secret_value() == "bar"
 
 
-def test_naver_model_param() -> None:
+def test_initialization_model_name() -> None:
     llm = ChatNaver(model="HCX-DASH-001")
     assert llm.model_name == "HCX-DASH-001"
     llm = ChatNaver(model_name="HCX-DASH-001")
     assert llm.model_name == "HCX-DASH-001"
 
 
-def test_function_dict_to_message_function_message() -> None:
-    content = json.dumps({"result": "Example #1"})
-    name = "test_function"
-    result = _convert_dict_to_message(
-        {
-            "role": "function",
-            "name": name,
-            "content": content,
-        }
-    )
-    assert isinstance(result, FunctionMessage)
-    assert result.name == name
-    assert result.content == content
-
-
-def test_convert_dict_to_message_human() -> None:
-    message = {"role": "user", "content": "foo"}
-    result = _convert_dict_to_message(message)
-    expected_output = HumanMessage(content="foo")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
-
-
-def test__convert_dict_to_message_human_with_name() -> None:
-    message = {"role": "user", "content": "foo", "name": "test"}
-    result = _convert_dict_to_message(message)
-    expected_output = HumanMessage(content="foo", name="test")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
-
-
-def test_convert_dict_to_message_ai() -> None:
-    message = {"role": "assistant", "content": "foo"}
-    result = _convert_dict_to_message(message)
-    expected_output = AIMessage(content="foo")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
-
-
-def test_convert_dict_to_message_ai_with_name() -> None:
-    message = {"role": "assistant", "content": "foo", "name": "test"}
-    result = _convert_dict_to_message(message)
-    expected_output = AIMessage(content="foo", name="test")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
-
-
-def test_convert_dict_to_message_system() -> None:
-    message = {"role": "system", "content": "foo"}
-    result = _convert_dict_to_message(message)
-    expected_output = SystemMessage(content="foo")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
-
-
-def test_convert_dict_to_message_system_with_name() -> None:
-    message = {"role": "system", "content": "foo", "name": "test"}
-    result = _convert_dict_to_message(message)
-    expected_output = SystemMessage(content="foo", name="test")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
-
-
-def test_convert_dict_to_message_tool() -> None:
-    message = {"role": "tool", "content": "foo", "tool_call_id": "bar"}
-    result = _convert_dict_to_message(message)
-    expected_output = ToolMessage(content="foo", tool_call_id="bar")
-    assert result == expected_output
-    assert _convert_message_to_dict(expected_output) == message
+# def test_function_dict_to_message_function_message() -> None:
+#     content = json.dumps({"result": "Example #1"})
+#     name = "test_function"
+#     result = _convert_dict_to_message(
+#         {
+#             "role": "function",
+#             "name": name,
+#             "content": content,
+#         }
+#     )
+#     assert isinstance(result, FunctionMessage)
+#     assert result.name == name
+#     assert result.content == content
+#
+#
+# def test_convert_dict_to_message_human() -> None:
+#     message = {"role": "user", "content": "foo"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = HumanMessage(content="foo")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
+#
+#
+# def test__convert_dict_to_message_human_with_name() -> None:
+#     message = {"role": "user", "content": "foo", "name": "test"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = HumanMessage(content="foo", name="test")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
+#
+#
+# def test_convert_dict_to_message_ai() -> None:
+#     message = {"role": "assistant", "content": "foo"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = AIMessage(content="foo")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
+#
+#
+# def test_convert_dict_to_message_ai_with_name() -> None:
+#     message = {"role": "assistant", "content": "foo", "name": "test"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = AIMessage(content="foo", name="test")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
+#
+#
+# def test_convert_dict_to_message_system() -> None:
+#     message = {"role": "system", "content": "foo"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = SystemMessage(content="foo")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
+#
+#
+# def test_convert_dict_to_message_system_with_name() -> None:
+#     message = {"role": "system", "content": "foo", "name": "test"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = SystemMessage(content="foo", name="test")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
+#
+#
+# def test_convert_dict_to_message_tool() -> None:
+#     message = {"role": "tool", "content": "foo", "tool_call_id": "bar"}
+#     result = _convert_dict_to_message(message)
+#     expected_output = ToolMessage(content="foo", tool_call_id="bar")
+#     assert result == expected_output
+#     assert _convert_message_to_dict(expected_output) == message
 
 
 @pytest.fixture

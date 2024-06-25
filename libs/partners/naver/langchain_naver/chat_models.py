@@ -1,24 +1,22 @@
 """Naver chat models."""
-import os
 from typing import Any, AsyncIterator, Iterator, List, Optional, Dict
 
-import openai
-from langchain_core.pydantic_v1 import Field, SecretStr, root_validator
+import httpx
+
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
-# from langchain_core.language_models.chat_models import BaseChatModel, LangSmithParams
-from langchain_core.language_models.chat_models import LangSmithParams
+from langchain_core.language_models.chat_models import LangSmithParams, BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
+from langchain_core.pydantic_v1 import Field, SecretStr, root_validator
 from langchain_core.utils import convert_to_secret_str, get_from_dict_or_env
-from langchain_openai.chat_models.base import BaseChatOpenAI
 
 DEFAULT_BASE_URL = "https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions"
 
 
-class ChatNaver(BaseChatOpenAI):
+class ChatNaver(BaseChatModel):
     """`NCP ClovaStudio` Chat Completion API.
 
     following environment variables set or passed in constructor in lower case:
@@ -36,6 +34,9 @@ class ChatNaver(BaseChatOpenAI):
             model.invoke([HumanMessage(content="Come up with 10 names for a song about parrots.")])
     """  # noqa: E501
 
+    client: httpx.Client = Field(default=None)  #: :meta private:
+    async_client: httpx.AsyncClient = Field(default=None)  #: :meta private:
+
     model_name: str = Field(default="HCX-003", alias="model")
 
     ncp_clovastudio_api_key: Optional[SecretStr] = Field(default=None, alias="clovastudio_api_key")
@@ -44,12 +45,44 @@ class ChatNaver(BaseChatOpenAI):
     ncp_apigw_api_key: Optional[SecretStr] = Field(default=None, alias="apigw_api_key")
     """Automatically inferred from env are `NCP_APIGW_API_KEY` if not provided."""
 
-    ncp_clovastudio_api_base: Optional[str] = Field(default=DEFAULT_BASE_URL, alias="base_url")
+    base_url: Optional[str] = Field(default=DEFAULT_BASE_URL, alias="ncp_clovastudio_api_base_url")
+    """Automatically inferred from env are `NCP_CLOVASTUDIO_API_BASE_URL` if not provided."""
+
+    temperature: Optional[float] = None
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
+    repeat_penalty: Optional[float] = None
+    max_tokens: Optional[int] = None
+    stop_before: Optional[str] = None
+    include_ai_filters: Optional[bool] = None
+    seed: Optional[int] = None
+    timeout: int = 60
 
     class Config:
         """Configuration for this pydantic object."""
 
         allow_population_by_field_name = True
+
+    @property
+    def _default_params(self) -> Dict[str, Any]:
+        """Get the default parameters for calling the API."""
+        defaults = {
+            "temperature": self.temperature,
+            "topK": self.top_k,
+            "topP": self.top_p,
+            "repeatPenalty": self.repeat_penalty,
+            "maxTokens": self.max_tokens,
+            "stopBefore": self.stop_before,
+            "includeAiFilters": self.include_ai_filters,
+            "seed": self.seed,
+        }
+        filtered = {k: v for k, v in defaults.items() if v is not None}
+        return filtered
+
+    @property
+    def _identifying_params(self) -> Dict[str, Any]:
+        """Get the identifying parameters."""
+        return self._default_params
 
     @property
     def lc_secrets(self) -> Dict[str, str]:
@@ -73,6 +106,24 @@ class ChatNaver(BaseChatOpenAI):
 
     @root_validator()
     def validate_environment(cls, values: Dict) -> Dict:
+        if values["temperature"] is not None and not 0 < values["temperature"] <= 1:
+            raise ValueError("temperature must be in the range (0.0, 1.0]")
+
+        if values["top_k"] is not None and not 0 <= values["top_k"] <= 128:
+            raise ValueError("top_k must be in the range [0, 128]")
+
+        if values["top_p"] is not None and not 0 <= values["top_p"] <= 1:
+            raise ValueError("top_p must be in the range [0.0, 1.0]")
+
+        if values["repeat_penalty"] is not None and not 0 < values["repeat_penalty"] <= 10:
+            raise ValueError("repeat_penalty must be in the range (0.0, 10]")
+
+        if values["max_tokens"] is not None and not 0 <= values["max_tokens"] <= 4096:
+            raise ValueError("max_tokens must be in the range [0, 4096]")
+
+        if values["seed"] is not None and not 0 <= values["temperature"] <= 4294967295:
+            raise ValueError("temperature must be in the range [0, 4294967295]")
+
         """Validate that api key and python package exists in environment."""
         values["ncp_clovastudio_api_key"] = convert_to_secret_str(
             get_from_dict_or_env(values, "ncp_clovastudio_api_key", "NCP_CLOVASTUDIO_API_KEY")
@@ -80,34 +131,36 @@ class ChatNaver(BaseChatOpenAI):
         values["ncp_apigw_api_key"] = convert_to_secret_str(
             get_from_dict_or_env(values, "ncp_apigw_api_key", "NCP_APIGW_API_KEY")
         )
-        values["ncp_clovastudio_api_base"] = values["ncp_clovastudio_api_base"] or os.getenv(
-            "NCP_CLOVASTUDIO_API_BASE"
-        )
-
-        client_params = {
-            "api_key": (
-                values["ncp_clovastudio_api_key"].get_secret_value()
-                if values["ncp_clovastudio_api_key"]
-                else None
-            ),
-            "base_url": values["ncp_clovastudio_api_base"],
-            # "timeout": values["request_timeout"],
-            # "max_retries": values["max_retries"],
-            # "default_headers": values["default_headers"],
-            # "default_query": values["default_query"],
-        }
+        values["base_url"] = get_from_dict_or_env(values, "base_url", "NCP_CLOVASTUDIO_API_BASE_URL")
 
         if not values.get("client"):
-            sync_specific = {"http_client": values["http_client"]}
-            values["client"] = openai.OpenAI(
-                **client_params, **sync_specific
-            ).chat.completions
+            values["client"] = httpx.Client(
+                base_url=values["base_url"],
+                headers=cls.default_headers(values),
+                timeout=values["timeout"],
+            )
         if not values.get("async_client"):
-            async_specific = {"http_client": values["http_async_client"]}
-            values["async_client"] = openai.AsyncOpenAI(
-                **client_params, **async_specific
-            ).chat.completions
+            values["async_client"] = httpx.AsyncClient(
+                base_url=values["base_url"],
+                headers=cls.default_headers(values),
+                timeout=values["timeout"],
+            )
         return values
+
+    @staticmethod
+    def default_headers(values):
+        clovastudio_api_key = values["ncp_clovastudio_api_key"].get_secret_value() \
+            if values["ncp_clovastudio_api_key"] \
+            else None
+        apigw_api_key = values["ncp_apigw_api_key"].get_secret_value() \
+            if values["ncp_apigw_api_key"] \
+            else None
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "NCP-CLOVASTUDIO-API-KEY": clovastudio_api_key,
+            "NCP-APIGW-API-KEY": apigw_api_key,
+        }
 
     # TODO: This method must be implemented to generate chat responses.
     def _generate(
